@@ -14,6 +14,8 @@ import type {
     InStatement,
     InArgs,
     Replicated,
+    ExecuteOptions,
+    BatchOptions,
 } from "@libsql/core/api";
 import { LibsqlError, LibsqlBatchError } from "@libsql/core/api";
 import type { ExpandedConfig } from "@libsql/core/config";
@@ -22,6 +24,8 @@ import {
     supportedUrlLink,
     transactionModeToBegin,
     ResultSetImpl,
+    normalizeExecuteArgs,
+    normalizeBatchOptions,
 } from "@libsql/core/util";
 
 export * from "@libsql/core/api";
@@ -306,20 +310,17 @@ export class Sqlite3Client implements Client {
         this.protocol = "file";
     }
 
+    // Local statements run synchronously, so `options.timeout` cannot interrupt them and is not applied.
     async execute(
         stmtOrSql: InStatement | string,
-        args?: InArgs,
+        argsOrOptions?: InArgs | ExecuteOptions,
+        maybeOptions?: ExecuteOptions,
     ): Promise<ResultSet> {
-        let stmt: InStatement;
-
-        if (typeof stmtOrSql === "string") {
-            stmt = {
-                sql: stmtOrSql,
-                args: args || [],
-            };
-        } else {
-            stmt = stmtOrSql;
-        }
+        const { stmt } = normalizeExecuteArgs(
+            stmtOrSql,
+            argsOrOptions,
+            maybeOptions,
+        );
 
         this.#checkNotClosed();
         const db = await this.#pool.acquire();
@@ -333,8 +334,10 @@ export class Sqlite3Client implements Client {
 
     async batch(
         stmts: Array<InStatement | [string, InArgs?]>,
-        mode: TransactionMode = "deferred",
+        modeOrOptions?: TransactionMode | BatchOptions,
     ): Promise<Array<ResultSet>> {
+        // As in `execute()`, a timeout cannot interrupt a local batch and is not applied.
+        const { mode } = normalizeBatchOptions(modeOrOptions, "deferred");
         this.#checkNotClosed();
         const db = await this.#pool.acquire();
         try {

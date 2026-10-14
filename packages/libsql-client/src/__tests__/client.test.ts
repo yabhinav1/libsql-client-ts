@@ -2050,6 +2050,103 @@ describe("timeout option (local files)", () => {
     });
 });
 
+describe("per-query timeout", () => {
+    // Counts to five million, which takes well over 50 ms on every server the suite runs against.
+    const slowSql =
+        "WITH RECURSIVE c(x) AS (VALUES (1) UNION ALL SELECT x + 1 FROM c WHERE x < 5000000) SELECT count(*) FROM c";
+
+    test(
+        "a query that finishes in time returns its result",
+        withClient(async (c) => {
+            const rs1 = await c.execute("SELECT 42", [], { timeout: 5000 });
+            expect(rs1.rows[0][0]).toStrictEqual(42);
+
+            const rs2 = await c.execute(
+                { sql: "SELECT ?", args: [7] },
+                { timeout: 5000 },
+            );
+            expect(rs2.rows[0][0]).toStrictEqual(7);
+        }),
+    );
+
+    test(
+        "the string form still takes named arguments",
+        withClient(async (c) => {
+            const rs = await c.execute(
+                "SELECT :a",
+                { a: 1 },
+                { timeout: 5000 },
+            );
+            expect(rs.rows[0][0]).toStrictEqual(1);
+        }),
+    );
+
+    test(
+        "batch() takes { mode, timeout } as well as a mode string",
+        withClient(async (c) => {
+            const rss = await c.batch(["SELECT 1", "SELECT 2"], {
+                mode: "read",
+                timeout: 5000,
+            });
+            expect(rss.map((rs) => rs.rows[0][0])).toStrictEqual([1, 2]);
+
+            const old = await c.batch(["SELECT 3"], "read");
+            expect(old[0].rows[0][0]).toStrictEqual(3);
+        }),
+    );
+
+    test(
+        "an invalid timeout is rejected before anything is sent",
+        withClient(async (c) => {
+            await expect(
+                c.execute("SELECT 1", [], { timeout: -1 }),
+            ).rejects.toBeInstanceOf(RangeError);
+            await expect(
+                c.batch(["SELECT 1"], { timeout: NaN }),
+            ).rejects.toBeInstanceOf(RangeError);
+        }),
+    );
+
+    (!isFile ? test : test.skip)(
+        "a slow query rejects with QUERY_TIMEOUT",
+        withClient(async (c) => {
+            const started = Date.now();
+            await expect(
+                c.execute(slowSql, [], { timeout: 50 }),
+            ).rejects.toThrow(expect.toBeLibsqlError("QUERY_TIMEOUT"));
+            expect(Date.now() - started).toBeLessThan(1000);
+        }),
+    );
+
+    (!isFile ? test : test.skip)(
+        "a slow batch rejects with QUERY_TIMEOUT",
+        withClient(async (c) => {
+            await expect(
+                c.batch(["SELECT 1", slowSql], { mode: "read", timeout: 50 }),
+            ).rejects.toThrow(expect.toBeLibsqlError("QUERY_TIMEOUT"));
+        }),
+    );
+
+    (!isFile ? test : test.skip)(
+        "the client keeps working after a timeout",
+        withClient(async (c) => {
+            await expect(
+                c.execute(slowSql, [], { timeout: 50 }),
+            ).rejects.toThrow(expect.toBeLibsqlError("QUERY_TIMEOUT"));
+            const rs = await c.execute("SELECT 1");
+            expect(rs.rows[0][0]).toStrictEqual(1);
+        }),
+    );
+
+    (isFile ? test : test.skip)(
+        "local databases run the query and ignore the timeout",
+        withClient(async (c) => {
+            const rs = await c.execute("SELECT 1", [], { timeout: 1 });
+            expect(rs.rows[0][0]).toStrictEqual(1);
+        }),
+    );
+});
+
 (isFile ? test : test.skip)("raw error codes", async () => {
     const c = createClient(config);
     try {

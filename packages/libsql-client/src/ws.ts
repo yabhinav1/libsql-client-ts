@@ -9,6 +9,8 @@ import type {
     InStatement,
     InArgs,
     Replicated,
+    ExecuteOptions,
+    BatchOptions,
 } from "@libsql/core/api";
 import { TransactionMode, LibsqlError } from "@libsql/core/api";
 import type { ExpandedConfig } from "@libsql/core/config";
@@ -22,7 +24,12 @@ import {
 } from "./hrana.js";
 import { SqlCache } from "./sql_cache.js";
 import { encodeBaseUrl } from "@libsql/core/uri";
-import { supportedUrlLink } from "@libsql/core/util";
+import {
+    supportedUrlLink,
+    normalizeExecuteArgs,
+    normalizeBatchOptions,
+    withQueryTimeout,
+} from "@libsql/core/util";
 import promiseLimit from "promise-limit";
 
 export * from "@libsql/core/api";
@@ -156,18 +163,14 @@ export class WsClient implements Client {
 
     async execute(
         stmtOrSql: InStatement | string,
-        args?: InArgs,
+        argsOrOptions?: InArgs | ExecuteOptions,
+        maybeOptions?: ExecuteOptions,
     ): Promise<ResultSet> {
-        let stmt: InStatement;
-
-        if (typeof stmtOrSql === "string") {
-            stmt = {
-                sql: stmtOrSql,
-                args: args || [],
-            };
-        } else {
-            stmt = stmtOrSql;
-        }
+        const { stmt, options } = normalizeExecuteArgs(
+            stmtOrSql,
+            argsOrOptions,
+            maybeOptions,
+        );
 
         return this.limit<ResultSet>(async () => {
             const streamState = await this.#openStream();
@@ -180,7 +183,11 @@ export class WsClient implements Client {
                 const hranaRowsPromise = streamState.stream.query(hranaStmt);
                 streamState.stream.closeGracefully();
 
-                const hranaRowsResult = await hranaRowsPromise;
+                const hranaRowsResult = await withQueryTimeout(
+                    hranaRowsPromise,
+                    options.timeout,
+                    () => streamState.stream.close(),
+                );
 
                 return resultSetFromHrana(hranaRowsResult);
             } catch (e) {
@@ -193,8 +200,12 @@ export class WsClient implements Client {
 
     async batch(
         stmts: Array<InStatement | [string, InArgs?]>,
-        mode: TransactionMode = "deferred",
+        modeOrOptions?: TransactionMode | BatchOptions,
     ): Promise<Array<ResultSet>> {
+        const { mode, timeout } = normalizeBatchOptions(
+            modeOrOptions,
+            "deferred",
+        );
         return this.limit<Array<ResultSet>>(async () => {
             const streamState = await this.#openStream();
             try {
@@ -222,7 +233,11 @@ export class WsClient implements Client {
                     hranaStmts,
                 );
 
-                const results = await resultsPromise;
+                const results = await withQueryTimeout(
+                    resultsPromise,
+                    timeout,
+                    () => streamState.stream.close(),
+                );
 
                 return results;
             } catch (e) {

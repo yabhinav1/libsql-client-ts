@@ -106,8 +106,12 @@ export interface Client {
      * });
      * ```
      */
-    execute(stmt: InStatement): Promise<ResultSet>;
-    execute(sql: string, args?: InArgs): Promise<ResultSet>;
+    execute(
+        sql: string,
+        args?: InArgs,
+        options?: ExecuteOptions,
+    ): Promise<ResultSet>;
+    execute(stmt: InStatement, options?: ExecuteOptions): Promise<ResultSet>;
 
     /** Execute a batch of SQL statements in a transaction.
      *
@@ -115,7 +119,8 @@ export interface Client {
      * transaction. This ensures that the batch is applied atomically: either all or no changes are applied.
      *
      * The `mode` parameter selects the transaction mode for the batch; please see {@link TransactionMode} for
-     * details. The default transaction mode is `"deferred"`.
+     * details. The default transaction mode is `"deferred"`. Pass a {@link BatchOptions} object instead to
+     * also set a `timeout`, for example `{ mode: "write", timeout: 5000 }`.
      *
      * If any of the statements in the batch fails with an error, the batch is aborted, the transaction is
      * rolled back and the returned promise is rejected.
@@ -144,7 +149,7 @@ export interface Client {
      */
     batch(
         stmts: Array<InStatement | [string, InArgs?]>,
-        mode?: TransactionMode,
+        mode?: TransactionMode | BatchOptions,
     ): Promise<Array<ResultSet>>;
 
     /** Execute a batch of SQL statements in a transaction with PRAGMA foreign_keys=off; before and PRAGMA foreign_keys=on; after.
@@ -401,6 +406,33 @@ export interface Transaction {
  * the previous write transactions to complete.
  */
 export type TransactionMode = "write" | "read" | "deferred";
+
+/** Options for a single {@link Client.execute} call.
+ *
+ * ```javascript
+ * const rs = await client.execute("SELECT * FROM books", [], { timeout: 5000 });
+ * const rs = await client.execute({ sql: "SELECT * FROM books" }, { timeout: 5000 });
+ * ```
+ */
+export interface ExecuteOptions {
+    /** Give up waiting for the result after this many milliseconds, and reject with a {@link LibsqlError}
+     * whose code is `"QUERY_TIMEOUT"`.
+     *
+     * The timer starts when the request is sent, not while it waits behind other requests. The client stops
+     * waiting and closes the stream, but a statement the server has already started may still run to
+     * completion.
+     *
+     * Only remote connections (`libsql:`, `http(s):` and `ws(s):` URLs) support timeouts. Local
+     * `file:` databases run statements synchronously, so a timer cannot fire in the middle of one and the
+     * option is ignored there. */
+    timeout?: number;
+}
+
+/** Options for a single {@link Client.batch} call. */
+export interface BatchOptions extends ExecuteOptions {
+    /** Transaction mode for the batch, see {@link TransactionMode}. Defaults to `"deferred"`. */
+    mode?: TransactionMode;
+}
 
 /** Result of executing an SQL statement.
  *
